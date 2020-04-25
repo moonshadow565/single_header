@@ -5,6 +5,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(single_headers LANGUAGES CXX)
 
-
 add_executable(single_headers main.cpp)
 target_include_directories(single_headers PRIVATE include)
