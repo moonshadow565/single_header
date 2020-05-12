@@ -32,25 +32,25 @@ For more information, please refer to <http://unlicense.org/>
 template<size_t N>
 inline constexpr auto make_pattern(char const(&str)[N]) noexcept {
     constexpr auto table = []() {
-        std::array<uint16_t, 256> result = {};
-        for (uint16_t i = 0; i != 10; i++) {
+        std::array<uint8_t, 256> result = {};
+        for (uint8_t i = 0; i != 10; i++) {
             result['0' + i] = i;
         }
-        for (uint16_t i = 0; i != 6; i++) {
+        for (uint8_t i = 0; i != 6; i++) {
             result['a' + i] = 10 + i;
             result['A' + i] = 10 + i;
         }
-        result['?'] = 0xF00;
-        result['x'] = 0xF00;
+        result['?'] = 0xF0u;
+        result['x'] = 0xF0u;
         return result;
     }();
     std::array<uint16_t, N / 3> ops = {};
     auto s = str;
     for (auto& o: ops) {
-        auto const hi = table[*s++] << 4;
-        auto const lo = table[*s++];
+        uint16_t const hi = table[*s++];
+        uint16_t const lo = table[*s++];
         s++;
-        o = hi | lo;
+        o = (hi << 4) | lo;
     }
     return [ops](char const* begin, size_t size) noexcept -> char const* {
         auto const result = std::search(begin, begin + size,
