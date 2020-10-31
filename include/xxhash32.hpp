@@ -26,8 +26,10 @@ For more information, please refer to <http://unlicense.org/>
 ✂--------------------------------[ Cut here ]----------------------------------
 */
 #pragma once
+#include <bit>
 #include <cstddef>
 #include <cinttypes>
+#include <string_view>
 
 constexpr uint32_t XXH32(char const* data, size_t size, uint32_t seed = 0) noexcept {
     constexpr uint32_t Prime1 = 2654435761U;
@@ -35,7 +37,6 @@ constexpr uint32_t XXH32(char const* data, size_t size, uint32_t seed = 0) noexc
     constexpr uint32_t Prime3 = 3266489917U;
     constexpr uint32_t Prime4 =  668265263U;
     constexpr uint32_t Prime5 =  374761393U;
-
     constexpr auto Char = [](char c) constexpr -> uint32_t {
         // return static_cast<uint8_t>(c >= 'A' && c <= 'Z' ? c + (- 'A' + 'a') : c);
         return static_cast<uint8_t>(c);
@@ -46,43 +47,43 @@ constexpr uint32_t XXH32(char const* data, size_t size, uint32_t seed = 0) noexc
                 | (Char(*(data + 2)) << 16)
                 | (Char(*(data + 3)) << 24);
     };
-    constexpr auto ROL = [](uint32_t x, unsigned char bits) constexpr -> uint32_t {
-        return (x << bits) | (x >> (32 - bits));
+    constexpr auto ROL = [](uint32_t value, int ammount) -> uint32_t {
+        return std::rotl(value, ammount);
     };
-
     char const* const end = data + size;
-    uint32_t result = static_cast<uint32_t>(size);
-    if(result >= 16) {
-        uint32_t state[4] = {
-            seed + Prime1 + Prime2,
-            seed + Prime2,
-            seed,
-            seed - Prime1
-        };
+    uint32_t result = 0;
+    if(result >= 16u) {
+        uint32_t s1 = seed + Prime1 + Prime2;
+        uint32_t s2 = seed + Prime2;
+        uint32_t s3 = seed;
+        uint32_t s4 = seed - Prime1;
         for(; (data + 16) <= end; data += 16) {
-            state[0] = ROL(state[0] + Block(data) * Prime2, 13) * Prime1;
-            state[1] = ROL(state[1] + Block(data + 4) * Prime2, 13) * Prime1;
-            state[2] = ROL(state[2] + Block(data + 8) * Prime2, 13) * Prime1;
-            state[3] = ROL(state[3] + Block(data + 12) * Prime2, 13) * Prime1;
+            s1 = ROL(s1 + Block(data) * Prime2, 13) * Prime1;
+            s2 = ROL(s2 + Block(data + 4) * Prime2, 13) * Prime1;
+            s3 = ROL(s3 + Block(data + 8) * Prime2, 13) * Prime1;
+            s4 = ROL(s4 + Block(data + 12) * Prime2, 13) * Prime1;
         }
-        result += ROL(state[0],  1) +
-                  ROL(state[1],  7) +
-                  ROL(state[2], 12) +
-                  ROL(state[3], 18);
+        result = ROL(s1,  1) +
+                 ROL(s2,  7) +
+                 ROL(s3, 12) +
+                 ROL(s4, 18);
     } else {
-        result += seed + Prime5;
+        result = seed + Prime5;
     }
+    result += static_cast<uint32_t>(size);
     for(; data + 4 <= end; data += 4) {
         result = ROL(result + Block(data) * Prime3, 17) * Prime4;
     }
-    for(; data != end; data++) {
+    for(; data != end; ++data) {
         result = ROL(result + Char(*data) * Prime5, 11) * Prime1;
     }
-
     result ^= result >> 15;
     result *= Prime2;
     result ^= result >> 13;
     result *= Prime3;
     result ^= result >> 16;
     return result;
+}
+constexpr uint32_t XXH32(std::string_view data, uint32_t seed = 0) noexcept {
+    return XXH32(data.data(), data.size(), seed);
 }
