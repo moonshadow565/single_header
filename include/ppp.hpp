@@ -29,60 +29,19 @@ For more information, please refer to <http://unlicense.org/>
 #include <array>
 #include <cstring>
 #include <cstdint>
-#include <optional>
 #include <span>
 #include <string_view>
+#include <tuple>
 
 namespace ppp {
-    template <char TAG, std::uint16_t START, std::uint16_t SIZE>
-    struct ct_group {
-        static constexpr inline char tag = TAG;
-        static constexpr inline std::uint16_t start = START;
-        static constexpr inline std::uint16_t size = SIZE;
-    };
-
-    template <std::uint16_t OP>
-    struct ct_op {
-        static constexpr inline std::uint16_t op = OP;
-    };
-
-    template <typename...ELEMS>
-    struct ct_array;
-
-    template<>
-    struct ct_array<> {
-        static constexpr std::uint16_t size = 0;
-
-        template <std::int32_t I>
-        using get = void;
-    };
-
-    template <typename FIRST, typename...REST>
-    struct ct_array<FIRST, REST...> : ct_array <REST...> {
-        static constexpr std::uint16_t size = 1 + sizeof...(REST);
-
-        template <std::int32_t I>
-        using get = std::conditional_t<I == 0, FIRST, typename ct_array <REST...>::template get<I - 1>>;
-    };
-
-    template <typename OPS, typename GROUPS>
-    struct ct_pattern {
-        using ops = OPS;
-        using groups = GROUPS;
-    };
-
-    struct group {
-        char tag = {};
-        std::uint16_t start = {};
-        std::uint16_t size = {};
-    };
-
-    template <size_t N>
+    template <std::size_t N>
     struct pattern {
         std::uint16_t op_count = {};
         std::uint16_t ops[N] = {};
         std::uint16_t group_count = {};
-        group groups[N] = {};
+        std::uint16_t group_start[N] = {};
+        std::uint16_t group_size[N] = {};
+        char group_tag[N] = {};
     private:
         static constexpr int32_t parse_hex(char c) noexcept  {
             if (c >= '0' && c <= '9') {
@@ -116,7 +75,7 @@ namespace ppp {
                     if (*next != '[') {
                         throw "Capture group tag must be followed by capture group!";
                     }
-                    groups[group_count].tag = cur;
+                    group_tag[group_count] = cur;
                 } else if (cur == '.') {
                     ops[op_count++] = 0x100u;
                 } else if (cur == '?') {
@@ -131,11 +90,15 @@ namespace ppp {
                     } else {
                         ops[op_count++] = static_cast<std::uint16_t>(first);
                     }
-                } else if (cur == '`') {
-                    if (char escaped = *next++; escaped == '\0') {
-                        throw "Character literal esacpe at end of string";
-                    } else {
-                        ops[op_count++] = static_cast<uint8_t>(escaped);
+                } else if (cur == '`' || cur == '\'' || cur == '"') {
+                    for (;;) {
+                        if (char const escaped = *next++; escaped == '\0') {
+                            throw "Unexpected end of string inside string literal";
+                        } else if (escaped == cur) {
+                            break;
+                        } else {
+                            ops[op_count++] = static_cast<uint8_t>(escaped);
+                        }
                     }
                 } else if (cur == ' ') {
                 } else {
@@ -146,8 +109,8 @@ namespace ppp {
             if (group_op_count == 0) {
                 throw "Empty capture group!";
             }
-            groups[group_index].start = group_op_start;
-            groups[group_index].size = group_op_count;
+            group_start[group_index]= group_op_start;
+            group_size[group_index] = group_op_count;
         }
     public:
         constexpr pattern(char const (&str)[N]) {
@@ -156,137 +119,173 @@ namespace ppp {
         }
     };
 
-    template <typename GROUPS>
     struct result {
-    private:
-        char const* start_;
-        char const* match_;
-        char const* end_;
-    public:
-        constexpr result(char const* start, char const* match, char const* end) noexcept
-            : start_(start), match_(match), end_(end) {}
+        std::span<char const> data = {};
+        std::uint64_t offset = {};
+    };
 
-        // Get std::span of source data
-        constexpr auto source() const noexcept {
-            return std::span { start_, end_ };
+    template <char TAG, std::uint16_t START, std::uint16_t SIZE>
+    struct group;
+
+    template <std::uint16_t START, std::uint16_t SIZE>
+    struct group<'\0', START, SIZE> {
+        static constexpr std::span<char const> pack(result result) noexcept {
+            auto const data = result.data.subspan<START, SIZE>();
+            return data;
         }
-        // Get std::span to scan next
-        constexpr auto next() const noexcept {
-            return std::span { match_ + GROUPS::template get<0>::size , end_ };
+    };
+
+    template <std::uint16_t START, std::uint16_t SIZE>
+    struct group<'s', START, SIZE> {
+        static constexpr std::string_view pack(result result) noexcept {
+            auto const data = result.data.subspan<START, SIZE>();
+            return { data.data(), data.size() };
         }
-        // Get char const* of capture group
-        template<std::uint8_t I>
-        constexpr auto group_data() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            return match_ + GROUPS::template get<I>::start;
+    };
+
+    template <std::uint16_t START>
+    struct group<'u', START, 1> {
+        static constexpr std::uint8_t pack(result result) noexcept {
+            auto const data = result.data.subspan(START, 1);
+            return static_cast<std::uint8_t>(data[0]);
         }
-        // Get sizeof of caputre group
-        template<std::uint8_t I>
-        static consteval auto group_size() noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            return GROUPS::template get<I>::size;
+    };
+
+    template <std::uint16_t START>
+    struct group<'u', START, 2> {
+        static constexpr std::uint16_t pack(result result) noexcept {
+            auto const data = result.data.subspan<START, 2>();
+            std::uint16_t number = 0;
+            number |= static_cast<std::uint16_t>(static_cast<std::uint8_t>(data[0]));
+            number |= static_cast<std::uint16_t>(static_cast<std::uint8_t>(data[1])) << 8;
+            return number;
         }
-        // Get std::span of capture group
-        template<std::uint8_t I>
-        constexpr auto group_span() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            return std::span<char const> { match_, end_ }
-                    .subspan<GROUPS::template get<I>::start, GROUPS::template get<I>::size>();
+    };
+
+    template <std::uint16_t START>
+    struct group<'u', START, 4> {
+        static constexpr std::uint32_t pack(result result) noexcept {
+            auto const data = result.data.subspan<START, 4>();
+            std::uint32_t number = 0;
+            number |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[0]));
+            number |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[1])) << 8;
+            number |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[2])) << 16;
+            number |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[3])) << 24;
+            return number;
         }
-        // Get std::string_view from capture group
-        template<std::uint8_t I>
-        constexpr auto group_sview() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            return std::string_view { group_data<I>(), group_size<I>() };
+    };
+
+    template <std::uint16_t START>
+    struct group<'u', START, 8> {
+        static constexpr std::uint64_t pack(result result) noexcept {
+            auto const data = result.data.subspan<START, 4>();
+            std::uint64_t number = 0;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[0]));
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[1])) << 8;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[2])) << 16;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[3])) << 24;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[4])) << 32;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[5])) << 40;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[6])) << 48;
+            number |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[7])) << 56;
+            return number;
         }
-        // Reinterpret capture group as unsigned integer
-        template<std::uint8_t I>
-        constexpr auto group_uint() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            constexpr auto SIZE = group_size<I>();
-            static_assert (SIZE == 1 || SIZE == 2 || SIZE == 4 || SIZE == 8, "Invalid integer size!");
-            using result_t = std::conditional_t<SIZE == 1, std::uint8_t,
-                                std::conditional_t<SIZE == 2, std::uint16_t,
-                                    std::conditional_t<SIZE == 4, std::uint32_t,
-                                        std::conditional_t<SIZE == 8, std::uint64_t,
-                                            void>>>>;
-            if (std::is_constant_evaluated()) {
-                auto const group = group_data<I>();
-                result_t result = (result_t)(std::uint8_t)group[0];
-                for (std::size_t i = 1; i != SIZE; ++i) {
-                    result |= (result_t)(std::uint8_t)group[i] << (i * 8);
+    };
+
+    template <std::uint16_t START, std::uint16_t SIZE>
+    struct group<'i', START, SIZE> {
+        static constexpr auto pack(result result) noexcept {
+            auto const number = group<'u', START, SIZE>::pack(result);
+            using T = std::make_signed_t<std::remove_cvref_t<decltype(number)>>;
+            return static_cast<T>(number);
+        }
+    };
+
+    template <std::uint16_t START, std::uint16_t SIZE>
+    struct group<'o', START, SIZE> {
+        static constexpr auto pack(result result) noexcept {
+            return result.offset + START;
+        }
+    };
+
+    template <std::uint16_t START, std::uint16_t SIZE>
+    struct group<'r', START, SIZE> {
+        static constexpr auto pack(result result) noexcept {
+            auto const offset = result.offset + START + SIZE;
+            auto const relative = group<'i', START, SIZE>::pack(result);
+            return offset + relative;
+        }
+    };
+
+    template <typename...GROUPS>
+    struct group_list {
+        static constexpr auto pack(result result) noexcept {
+            return std::make_tuple(GROUPS::pack(result)...);
+        }
+    };
+
+    template <typename GROUPS, std::uint16_t...OPS>
+    struct iterator {
+    private:
+        result result_ = {};
+
+        constexpr iterator() noexcept = default;
+
+        constexpr iterator(result result) noexcept : result_(result) {}
+    public:
+        static constexpr iterator find(std::span<char const> data, std::uint64_t base) noexcept {
+            for (std::size_t i = 0; (data.size() - i) >= sizeof...(OPS); ++i, ++base) {
+                auto j = data.data() + i;
+                if (((((std::uint8_t)*j++ == (std::uint8_t)OPS) || OPS > 0xFF) && ...)) {
+                    return { { data.subspan(i), base } };
                 }
-                return result;
-            } else {
-                result_t result;
-                std::memcpy(&result, group_data<I>(), SIZE);
-                return result;
             }
+            return {};
         }
-        // Reinterpret capture group as integer
-        template<std::uint8_t I>
-        constexpr auto group_int() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            auto const result = group_uint<I>();
-            using T = std::make_signed_t<std::remove_cvref_t<decltype(result)>>;
-            return (T)result;
+
+        constexpr operator bool() const noexcept {
+            return !result_.data.empty();
         }
-        // Get offset of capture group from start of source data
-        template<std::uint8_t I>
-        constexpr auto group_off() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            return group_data<I>() - start_;
+
+        constexpr auto begin() const noexcept {
+            return *this;
         }
-        // Reinterpet capture group as relative offset from end of itself to start of source of data
-        template<std::uint8_t I>
-        constexpr auto group_rel() const noexcept {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            auto const offset = group_off<I>();
-            auto const relative = group_int<I>();
-            return offset + group_size<I>() + relative;
+
+        constexpr auto end() const noexcept {
+            return false;
         }
-        // Get capture group as hinted: (s)view, (u)int, (i)nt, (o)ff, (r)el else as span
-        template<std::uint8_t I>
-        constexpr auto group() const noexcept -> decltype(auto) {
-            static_assert (I < GROUPS::size, "Invalid capture group!");
-            constexpr char tag = GROUPS::template get<I>::tag;
-            if constexpr (tag == 's') {
-                return group_sview<I>();
-            } else if constexpr (tag == 'u') {
-                return group_uint<I>();
-            } else if constexpr (tag == 'i') {
-                return group_int<I>();
-            } else if constexpr (tag == 'o') {
-                return group_off<I>();
-            } else if constexpr (tag == 'r') {
-                return group_rel<I>();
-            } else {
-                return group_span<I>();
+
+        constexpr auto operator*() const noexcept {
+            return GROUPS::pack(result_);
+        }
+
+        constexpr iterator& operator++() noexcept {
+            if (!result_.data.empty()) {
+                auto const next_data = result_.data.subspan(sizeof...(OPS));
+                auto const next_offset = result_.offset + sizeof...(OPS);
+                *this = find(next_data, next_offset);
             }
+            return *this;
         }
     };
 }
 
 
 #if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-string-literal-operator-template"
 template<class Char = char, Char...c>
 consteval auto operator"" _pattern() {
     constexpr auto pat = ppp::pattern<sizeof...(c) + 1>({ c..., '\0' });
+#pragma clang diagnostic pop
 #else
 template<ppp::pattern pat>
 consteval auto operator"" _pattern() noexcept {
 #endif
     return []<std::size_t...O, std::size_t...G> (std::index_sequence<O...>, std::index_sequence<G...>) {
-        using groups_t = ppp::ct_array<ppp::ct_group<pat.groups[G].tag, pat.groups[G].start, pat.groups[G].size>...>;
-        using result_t = ppp::result<groups_t>;
-        return +[] (std::span<char const> data) constexpr noexcept -> std::optional<result_t> {
-            for (auto i = data; i.size() >= pat.op_count; i = i.subspan(1)) {
-                if (((pat.ops[O] > 0xFF ? true : pat.ops[O] == (std::uint8_t)i[O]) && ...)) {
-                    return result_t(data.data(), i.data(), data.data() + data.size());
-                }
-            }
-            return std::nullopt;
-        };
+        using groups_t = ppp::group_list<ppp::group<pat.group_tag[G], pat.group_start[G], pat.group_size[G]>...>;
+        using result_t = ppp::iterator<groups_t, pat.ops[O]...>;
+        return &result_t::find;
     } (std::make_index_sequence<pat.op_count>(), std::make_index_sequence<pat.group_count>());
 }
 
