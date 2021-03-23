@@ -29,6 +29,7 @@ For more information, please refer to <http://unlicense.org/>
 #include <array>
 #include <cstring>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -100,7 +101,11 @@ namespace ppp {
                             ops[op_count++] = static_cast<uint8_t>(escaped);
                         }
                     }
-                } else if (cur == ' ') {
+                } else if (cur == '#' || cur == ';') {
+                    while (*next && *next != '\n') {
+                        ++next;
+                    }
+                } else if (cur == ' ' || cur == '\t' || cur == '\r' || cur == '\n') {
                 } else {
                     throw "Invalid pattern character!";
                 }
@@ -267,7 +272,28 @@ namespace ppp {
             }
             return *this;
         }
+
+        static constexpr auto matches(std::span<char const> data, std::uint64_t offset) noexcept {
+            using result_t = std::optional<decltype(GROUPS::pack(result{}))>;
+            if (data.size() >= sizeof...(OPS)) {
+                auto j = data.data();
+                if (((((std::uint8_t)*j++ == (std::uint8_t)OPS) || OPS > 0xFF) && ...)) {
+                    return result_t { GROUPS::pack({ data, offset }) };
+                }
+            }
+            return result_t {};
+        }
     };
+
+    template <auto...rest>
+    constexpr auto any(std::span<char const> data, std::uint64_t offset) noexcept {
+        auto out = std::optional<decltype((*rest(data, offset),...))> {};
+        while (!data.empty() && !((out = decltype(rest(data, offset))::matches(data, offset)) || ...)) {
+            data = data.subspan(1);
+            ++offset;
+        }
+        return out;
+    }
 }
 
 
